@@ -1,0 +1,14 @@
+{
+  "grammars": [{
+    "name": "ignition",
+    "camelcase": "Ignition",
+    "scope": "source.ignition",
+    "path": ".",
+    "file-types": ["ign"]
+  }],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "GPL-3.0-only",
+    "description": "V8 Ignition bytecode disassembly"
+  }
+}

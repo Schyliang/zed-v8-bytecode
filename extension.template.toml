@@ -1,0 +1,11 @@
+id = "v8-bytecode"
+name = "V8 Ignition Bytecode"
+version = "0.1.0"
+schema_version = 1
+authors = ["Schyliang"]
+description = "Syntax highlighting for V8 Ignition bytecode disassembly (.ign), with embedded JavaScript."
+repository = "https://github.com/Schyliang/zed-v8-bytecode"
+
+[grammars.ignition]
+repository = "{{GRAMMAR_REPOSITORY}}"
+rev = "{{GRAMMAR_REVISION}}"

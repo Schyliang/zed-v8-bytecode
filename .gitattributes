@@ -1,0 +1,2 @@
+* text=auto eol=lf
+examples/upstream/*.ign -text whitespace=-blank-at-eol

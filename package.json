@@ -1,0 +1,17 @@
+{
+  "name": "zed-v8-bytecode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "V8 Ignition bytecode syntax highlighting for Zed",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "generate": "cd tree-sitter-ignition && tree-sitter generate --abi 14",
+    "build": "node scripts/build.mjs",
+    "prepare:dev": "node scripts/prepare-dev.mjs",
+    "test": "node scripts/test.mjs"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.25.10",
+    "web-tree-sitter": "0.25.10"
+  }
+}

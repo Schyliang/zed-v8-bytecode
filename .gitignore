@@ -1,0 +1,8 @@
+node_modules/
+.build/
+grammars/ignition/
+grammars/*.wasm
+grammars/*.partial
+tree-sitter-ignition/*.wasm
+dist/
+*.zip
