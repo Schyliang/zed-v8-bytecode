@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { spawnSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { access, mkdir, rename, rm } from 'node:fs/promises';
+import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import http from 'node:http';
@@ -137,11 +137,13 @@ try {
   // Match Zed's compilation flags for the actual extension artifact.
   run(clang, [...common, '-o', `${output}.partial`]);
   await rename(`${output}.partial`, output);
-  // Emscripten's browser loader expects its own libc rather than WASI libc.so.
-  // This grammar has no libc calls, so a second build can omit that dependency.
+  // The browser loader supplies allocator functions from its own runtime.
+  // Allow only those imports rather than linking against WASI libc.so.
   await mkdir(path.join(root, '.build'), { recursive: true });
+  const allocatorImports = path.join(root, '.build', 'wasm-allocator-imports.txt');
+  await writeFile(allocatorImports, 'calloc\nfree\n');
   const webOutput = path.join(root, '.build', 'ignition-web.wasm');
-  run(clang, [...common, '-nostdlib', '-Wl,--no-entry', '-o', `${webOutput}.partial`]);
+  run(clang, [...common, '-nostdlib', '-Wl,--no-entry', `-Wl,--allow-undefined-file=${allocatorImports}`, '-o', `${webOutput}.partial`]);
   await rename(`${webOutput}.partial`, webOutput);
   console.log('Built grammars/ignition.wasm');
 } catch (error) {

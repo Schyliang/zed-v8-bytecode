@@ -3,7 +3,7 @@
 module.exports = grammar({
   name: 'ignition',
   extras: $ => [/[ \t\r]/],
-  externals: $ => [$.javascript_source, $._end_of_file],
+  externals: $ => [$.javascript_source, $._end_of_file, $._string_length, $._unquoted_string],
   conflicts: $ => [
     [$.instruction, $._value],
     [$.bracketed_value, $._punctuation],
@@ -29,7 +29,7 @@ module.exports = grammar({
       alias($.atom, $.bytecode_offset),
       ':',
       $.hex_dump,
-      alias($.atom, $.opcode),
+      $.opcode,
       repeat($._value),
       $._line_end,
     )),
@@ -37,6 +37,7 @@ module.exports = grammar({
     // Include the space after each byte: an opcode such as Add must not be
     // consumed as a final hexadecimal byte (Ad).
     hex_dump: _ => token(prec(2, /(?:[a-fA-F0-9]{2}[ \t]+)+/)),
+    opcode: _ => token(/[A-Za-z][A-Za-z0-9_.]*/),
 
     source_code: $ => seq('- source code:', optional($.javascript_source)),
     property: $ => prec.dynamic(3, seq(
@@ -68,7 +69,7 @@ module.exports = grammar({
     string_tag: $ => seq(
       '<',
       alias('String', $.string_type),
-      '[', alias($.atom, $.string_length), ']', ':',
+      '[', alias($._string_length, $.string_length), ']', ':',
       optional('u'),
       choice(
         seq('#', optional(alias($._unquoted_string, $.string_value))),
@@ -76,12 +77,11 @@ module.exports = grammar({
       ),
       '>',
     ),
-    // Keep NUL separate from the non-empty chunks: Tree-sitter excludes it
-    // from negated character classes, including merged single-character choices.
-    _unquoted_string: _ => token(prec(1, repeat1(choice('\0', /[^>\r\n]+/)))),
     object_tag: $ => seq(
       '<', alias($.atom, $.object_type), repeat($._value), '>',
     ),
+    // Keep NUL separate from chunks so the lexer does not merge it into a
+    // negated character class that excludes NUL.
     quoted_string: _ => token(choice(
       seq('"', repeat(choice(
         '\0', /[^"\\\r\n]+/,

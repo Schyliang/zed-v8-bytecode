@@ -29,6 +29,48 @@ const nulCases = [
   ['embedded source', ' - source code: const x = "a\0b";\n - script: 0x123 <Script>\n', 'javascript_source', null],
 ];
 const nulFixture = nulCases.map(([, text]) => text).join('');
+const malformedOpcodes = [
+  '0x123 @ 0 : 01 2 Star0\n',
+  '0x123 @ 0 : 01 0x2\n',
+  '0x123 @ 0 : 01 -2\n',
+  '0x123 @ 0 : 01 2.5\n',
+];
+const stringCases = [
+  ['comparison', '0: 0x1000 <String[3]: #a>b>\n', ['a>b']],
+  ['greater-than only', '0: 0x1000 <String[1]: #>>\n', ['>']],
+  ['trailing greater-than', '0: 0x1000 <String[2]: #a>>\n', ['a>']],
+  ['repeated greater-than', '0: 0x1000 <String[2]: #>>>\n', ['>>']],
+  ['empty string', '0: 0x1000 <String[0]: #>\n', [null]],
+  ['adjacent tags', '0: <String[2]: #a>> <String[1]: #>>\n', ['a>', '>']],
+  ['nested tags', '0: <Map <String[3]: #a>b> <String[1]: #>>>\n', ['a>b', '>']],
+  ['nested empty string', '0: <Map <String[0]: #>>\n', [null]],
+  ['tag lookalike in value', '0: <String[15]: #<String[1]: #x>>\n', ['<String[1]: #x>']],
+  ['NUL and greater-than', '0: <String[4]: #a\0>b>\n', ['a\0>b']],
+  ['Unicode and greater-than', '0: <String[5]: u#😀>💡>\n', ['😀>💡']],
+  ['escaped NUL', '0: <String[4]: #a\\x00>b>\n', ['a\\x00>b']],
+  ['escaped newline', '0: <String[3]: #a\\n>>\n', ['a\\n>']],
+  ['escaped backslash', '0: <String[3]: #\\\\>x>\n', ['\\\\>x']],
+  ['escaped wide string', '0: <String[3]: u#\\x4e2d\\x6587>>\n', ['\\x4e2d\\x6587>']],
+  ['nested escaped wide string', '0: <Map <String[2]: u#\\x4e2d\\x6587>>\n', ['\\x4e2d\\x6587']],
+  ['escaped supplementary Unicode', '0: <String[5]: u#\\xd83d\\xde00>\\xd83d\\xdca1>\n', ['\\xd83d\\xde00>\\xd83d\\xdca1']],
+  ['escaped byte and hex text', `0: <String[40]: #${'\\xabadcd'.repeat(8)}> <String[1]: #x>\n`, ['\\xabadcd'.repeat(8), 'x']],
+  ['quoted and unquoted tags', '0: <String[3]: #a>b> <String[1]: "x"> <String[1]: #>>\n', ['a>b', '"x"', '>']],
+  ['full-length string', `0: <String[1024]: #${'>'.repeat(1024)}>\n`, ['>'.repeat(1024)]],
+  ['truncated string', '0: <String[1025]: #...<truncated>>> <String[1]: #x>\n', ['...<truncated>>', 'x']],
+];
+const followingInstruction = '0x124 @ 1 : 02 Add a0\n';
+const stringFixture = stringCases.map(([, text]) => text + followingInstruction).join('')
+  + '0: <String[1]: #>>\n';
+const stringFiles = [];
+for (const [name, text] of [
+  ['lf', stringFixture], ['crlf', stringFixture.replaceAll('\n', '\r\n')], ['eof', stringFixture.trimEnd()],
+]) {
+  const file = path.join(nativeCache, `strings-${name}.ign`);
+  await writeFile(file, text);
+  stringFiles.push(file);
+}
+const opcodeFixture = path.join(nativeCache, 'opcode-regressions.ign');
+await writeFile(opcodeFixture, malformedOpcodes.join('') + followingInstruction);
 const nulFiles = [];
 for (const [name, text] of [
   ['lf', nulFixture], ['crlf', nulFixture.replaceAll('\n', '\r\n')], ['eof', nulFixture.trimEnd()],
@@ -44,6 +86,8 @@ const native = spawnSync(cli, ['parse', '--wasm', '--quiet', '--stat', '--config
   ...['test.ign', 'test2.ign', 'test3.ign'].map(name => path.join(root, 'examples', 'upstream', name)),
   path.join(root, 'examples', 'features.ign'),
   ...nulFiles,
+  opcodeFixture,
+  ...stringFiles,
 ], { cwd: path.join(root, 'tree-sitter-ignition'), stdio: 'inherit',
   env: { ...process.env, TREE_SITTER_LIBDIR: nativeCache } });
 if (native.error) throw native.error;
@@ -118,6 +162,29 @@ for (const [name, text, type, value] of nulCases) {
   }
 }
 
+for (const text of malformedOpcodes) {
+  const tree = parse(text + followingInstruction, 'numeric opcode recovery');
+  assert.equal(nodes(tree.rootNode, 'metadata_line').length, 1, 'malformed instruction must fall back to metadata');
+  assert.deepEqual(nodes(tree.rootNode, 'opcode').map(node => node.text), ['Add'],
+    'numeric values must not become opcodes or consume the following instruction');
+  tree.delete();
+}
+
+for (const [name, text, values] of stringCases) {
+  for (const input of [text + followingInstruction, (text + followingInstruction).replaceAll('\n', '\r\n'), text.trimEnd()]) {
+    const tree = parse(input, `string boundary: ${name}`);
+    const tags = nodes(tree.rootNode, 'string_tag');
+    assert.equal(tags.length, values.length, `${name}: adjacent and nested tags must remain separate`);
+    assert.deepEqual(tags.map(tag => nodes(tag, 'string_value')[0]?.text ?? null), values,
+      `${name}: preserve the full value without the tag's closing delimiter`);
+    const captures = queries.highlights.captures(tree.rootNode);
+    for (const value of nodes(tree.rootNode, 'string_value')) {
+      assert(captures.some(c => c.name === 'string' && c.node.id === value.id), `${name}: complete string missing highlight`);
+    }
+    tree.delete();
+  }
+}
+
 // Count lexer work rather than elapsed time to detect quadratic scanning
 // without making this regression depend on machine speed or system load.
 const lexicalSteps = [];
@@ -174,6 +241,45 @@ assert(!nodes(reparsed.rootNode, 'javascript_source')[0].text.includes(' - scrip
 editedTree.delete();
 reparsed.delete();
 console.log('Incremental source edits preserve the JavaScript injection boundary.');
+
+// The external scanner retains the declared length and encoding between tokens.
+// Editing either must invalidate the value just as a fresh parse would.
+for (const [before, oldText, newText] of [
+  ['0: <String[3]: #a>b> <String[1]: #x>\n', '3', '2'],
+  ['0: <String[3]: #a>b> <String[1]: #x>\n', 'a>b', 'a>>'],
+  ['0: <String[3]: #a>b> <String[1]: #x>\n', 'a>b', 'ab'],
+  ['0: <String[3]: #a>b> <String[1]: #x>\n', 'a>b', 'a>>b'],
+  ['0: <String[3]: #a>b> <String[1]: #x>\n', '#a>b', '"a>b"'],
+  ['0: <String[3]: "a>b"> <String[1]: #x>\n', '"a>b"', '#a>b'],
+  ['0: <String[3]: #\\xabad> <String[1]: #x>\n', '#', 'u#'],
+  ['0: <String[3]: u#\\xabad> <String[1]: #x>\n', 'u#', '#'],
+  ['0: <String[5]: u#😀>💡> <String[1]: #x>\n', '😀', '中'],
+  ['0: <String[1]: #>> <String[1]: #x>\n', '1', '0'],
+  ['0: <String[1025]: #...<truncated>>> <String[1]: #x>\n', '1025', '1024'],
+]) {
+  for (const input of [before, before.replaceAll('\n', '\r\n')]) {
+    const text = input + followingInstruction;
+    const index = text.indexOf(oldText);
+    const oldTree = parser.parse(text);
+    oldTree.edit({
+      startIndex: index, oldEndIndex: index + oldText.length, newEndIndex: index + newText.length,
+      startPosition: { row: 0, column: index },
+      oldEndPosition: { row: 0, column: index + oldText.length },
+      newEndPosition: { row: 0, column: index + newText.length },
+    });
+    const edited = text.slice(0, index) + newText + text.slice(index + oldText.length);
+    const incremental = parser.parse(edited, oldTree);
+    const full = parser.parse(edited);
+    assert.equal(incremental.rootNode.toString(), full.rootNode.toString(), 'incremental string edit must match a full parse');
+    for (const type of ['string_tag', 'string_value', 'instruction', 'opcode', 'ERROR']) {
+      const spans = tree => nodes(tree.rootNode, type).map(node => [node.text, node.startIndex, node.endIndex, node.startPosition, node.endPosition]);
+      assert.deepEqual(spans(incremental), spans(full), `${type}: edited ranges must match a full parse`);
+    }
+    assert.deepEqual(nodes(incremental.rootNode, 'opcode').map(node => node.text), ['Add'], 'string edits must preserve the following instruction');
+    oldTree.delete(); incremental.delete(); full.delete();
+  }
+}
+console.log('Incremental string length, encoding, delimiter, and Unicode edits match full parses.');
 for (const query of Object.values(queries)) query.delete();
 parser.delete();
 console.log('Parser, highlighting, JavaScript injection, and bracket checks passed.');
