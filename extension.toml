@@ -1,0 +1,12 @@
+id = "v8-bytecode"
+name = "V8 Ignition Bytecode"
+version = "0.1.0"
+schema_version = 1
+authors = ["Schyliang"]
+description = "Syntax highlighting for V8 Ignition bytecode disassembly (.ign), with embedded JavaScript."
+repository = "https://github.com/Schyliang/zed-v8-bytecode"
+
+[grammars.ignition]
+repository = "https://github.com/Schyliang/zed-v8-bytecode"
+rev = "e97006fc85d86a0f58681e82e552c077ca8ae2c0"
+path = "tree-sitter-ignition"
