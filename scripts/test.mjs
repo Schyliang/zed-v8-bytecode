@@ -40,7 +40,7 @@ for (const [name, text] of [
 const config = path.join(root, '.build', 'tree-sitter-config.json');
 await writeFile(config, JSON.stringify({ 'parser-directories': [root] }));
 const cli = path.join(root, 'node_modules', 'tree-sitter-cli', process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter');
-const native = spawnSync('rtk', [cli, 'parse', '--wasm', '--quiet', '--stat', '--config-path', config,
+const native = spawnSync(cli, ['parse', '--wasm', '--quiet', '--stat', '--config-path', config,
   ...['test.ign', 'test2.ign', 'test3.ign'].map(name => path.join(root, 'examples', 'upstream', name)),
   path.join(root, 'examples', 'features.ign'),
   ...nulFiles,

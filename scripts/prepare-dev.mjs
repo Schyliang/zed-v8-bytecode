@@ -9,7 +9,7 @@ const snapshot = path.join(root, '.build', 'grammar-repository');
 const devExtension = path.join(root, '.build', 'dev-extension');
 
 function git(args) {
-  const result = spawnSync('rtk', ['git', ...args], {
+  const result = spawnSync('git', args, {
     cwd: snapshot, encoding: 'utf8',
     // Keep the generated artifact reproducible and separate from user identity.
     env: { ...process.env, GIT_AUTHOR_NAME: 'Local Grammar Build',

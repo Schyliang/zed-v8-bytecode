@@ -14,7 +14,7 @@ const platform = { win32: 'windows', darwin: 'macos', linux: 'linux' }[process.p
 const arch = { x64: 'x86_64', arm64: 'arm64' }[process.arch];
 
 function run(executable, args, cwd = root) {
-  const result = spawnSync('rtk', [executable, ...args], { cwd, stdio: 'inherit' });
+  const result = spawnSync(executable, args, { cwd, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${executable} failed (exit ${result.status})`);
 }
@@ -123,7 +123,8 @@ async function compiler() {
 }
 
 try {
-  run('npm', ['run', 'generate']);
+  const cli = path.join(root, 'node_modules', 'tree-sitter-cli', process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter');
+  run(cli, ['generate', '--abi', '14'], path.join(root, 'tree-sitter-ignition'));
   const clang = await compiler();
   await mkdir(path.join(root, 'grammars'), { recursive: true });
   const src = path.join(root, 'tree-sitter-ignition', 'src');
