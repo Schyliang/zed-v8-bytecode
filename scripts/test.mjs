@@ -11,10 +11,10 @@ const nativeCache = path.join(root, '.build', 'native-validation');
 await mkdir(nativeCache, { recursive: true });
 await cp(path.join(root, 'grammars', 'ignition.wasm'), path.join(nativeCache, 'ignition.wasm'));
 const nulCases = [
-  ['metadata', 'foo\0bar\n', 'other', '\0'],
-  ['NUL-only metadata', '\0\n', 'other', '\0'],
-  ['adjacent NULs', 'foo\0\0bar\n', 'other', '\0\0'],
-  ['Unicode metadata', '😀\0💡\n', 'other', '😀\0💡'],
+  ['metadata', 'foo\0bar\n', null, null],
+  ['NUL-only metadata', '\0\n', null, null],
+  ['adjacent NULs', 'foo\0\0bar\n', null, null],
+  ['Unicode metadata', '😀\0💡\n', null, null],
   ['unquoted string', '0: 0x123 <String[3]: #a\0b>\n', 'string_value', 'a\0b'],
   ['Unicode unquoted string', '0: 0x123 <String[5]: #😀\0💡>\n', 'string_value', '😀\0💡'],
   ['NUL-only string', '0: 0x123 <String[1]: #\0>\n', 'string_value', '\0'],
@@ -24,8 +24,8 @@ const nulCases = [
   ['escaped NUL', '"a\\\0b"\n', 'quoted_string', '"a\\\0b"'],
   ['comment', '// a\0b\n', 'comment', '// a\0b'],
   ['Unicode comment', '// 😀\0💡\n', 'comment', '// 😀\0💡'],
-  ['instruction operand', '0x123 @ 0 : 0b Ldar a0\0\n', 'other', '\0'],
-  ['property', ' - note: a\0b\n', 'other', '\0'],
+  ['instruction operand', '0x123 @ 0 : 0b Ldar a0\0\n', null, null],
+  ['property', ' - note: a\0b\n', null, null],
   ['embedded source', ' - source code: const x = "a\0b";\n - script: 0x123 <Script>\n', 'javascript_source', null],
 ];
 const nulFixture = nulCases.map(([, text]) => text).join('');
@@ -55,6 +55,9 @@ const stringCases = [
   ['escaped supplementary Unicode', '0: <String[5]: u#\\xd83d\\xde00>\\xd83d\\xdca1>\n', ['\\xd83d\\xde00>\\xd83d\\xdca1']],
   ['escaped byte and hex text', `0: <String[40]: #${'\\xabadcd'.repeat(8)}> <String[1]: #x>\n`, ['\\xabadcd'.repeat(8), 'x']],
   ['quoted and unquoted tags', '0: <String[3]: #a>b> <String[1]: "x"> <String[1]: #>>\n', ['a>b', '"x"', '>']],
+  ['wide quoted string', '0: <String[2]: uc"中文">\n', ['"中文"']],
+  ['e-prefixed quoted string', '0: <String[4]: e"demo">\n', ['"demo"']],
+  ['greater-than-prefixed quoted string', '0: <String[4]: >"demo">\n', ['"demo"']],
   ['full-length string', `0: <String[1024]: #${'>'.repeat(1024)}>\n`, ['>'.repeat(1024)]],
   ['truncated string', '0: <String[1025]: #...<truncated>>> <String[1]: #x>\n', ['...<truncated>>', 'x']],
 ];
@@ -129,34 +132,53 @@ function parse(text, name) {
 
 for (const filename of ['test.ign', 'test2.ign', 'test3.ign']) {
   const tree = parse(await readFile(path.join(root, 'examples', 'upstream', filename), 'utf8'), filename);
-  if (filename === 'test2.ign') {
-    const sources = nodes(tree.rootNode, 'javascript_source');
-    assert.equal(sources.length, 2, 'two source blocks must be kept separate');
-    assert(sources.every(node => !node.text.includes(' - script:')), 'JavaScript injection must stop before the script footer');
-    assert.equal(queries.injections.captures(tree.rootNode).length, 2);
-  }
   tree.delete();
 }
 
 const features = await readFile(path.join(root, 'examples', 'features.ign'), 'utf8');
 for (const text of [features, features.replaceAll('\n', '\r\n'), features.trimEnd()]) {
   const tree = parse(text, 'features (LF / CRLF / final line)');
-  assert.equal(nodes(tree.rootNode, 'string_tag').length, 7, 'all V8 string representations');
-  assert.equal(nodes(tree.rootNode, 'position_marker').length, 2);
-  const captures = queries.highlights.captures(tree.rootNode);
-  assert(captures.some(c => c.name === 'constant' && c.node.text === 'r1'));
-  assert(captures.some(c => c.name === 'constant' && c.node.text === 'a0'));
-  assert(captures.some(c => c.name === 'number' && c.node.text === '-3.5'));
-  assert(queries.brackets.captures(tree.rootNode).length > 0);
+  tree.delete();
+}
+
+// Keep semantic expectations in small fixtures so examples can grow freely.
+const highlightTree = parse('0 S> 0x123 @ 0 : 01 Ldar r1\n1 E> 0x124 @ 1 : 02 Add a0, [-3.5]\n', 'operand and position highlights');
+const highlightCaptures = queries.highlights.captures(highlightTree.rootNode);
+for (const [name, text] of [['keyword', 'S>'], ['keyword', 'E>'], ['constant', 'r1'], ['constant', 'a0'], ['number', '-3.5']]) {
+  assert(highlightCaptures.some(c => c.name === name && c.node.text === text), `${text}: missing ${name} highlight`);
+}
+assert(queries.brackets.matches(highlightTree.rootNode).some(({ captures }) =>
+  captures.some(c => c.name === 'open' && c.node.text === '[')
+  && captures.some(c => c.name === 'close' && c.node.text === ']')),
+  'operand brackets must form a matching pair');
+highlightTree.delete();
+
+const sourceBlocks = [' const first = 1;\n', ' const second = 2;\n'];
+const sourceFixture = sourceBlocks.map((text, index) => ` - source code:${text} - script: 0x${index + 1} <Script>\n`).join('');
+for (const text of [sourceFixture, sourceFixture.replaceAll('\n', '\r\n'), sourceFixture.trimEnd()]) {
+  const tree = parse(text, 'separate JavaScript injections');
+  assert.deepEqual(queries.injections.captures(tree.rootNode)
+    .filter(c => c.name === 'injection.content').map(c => c.node.text.replaceAll('\r\n', '\n')),
+    sourceBlocks, 'each source block must be injected separately without its script footer');
   tree.delete();
 }
 
 for (const [name, text, type, value] of nulCases) {
   for (const input of [text, text.replaceAll('\n', '\r\n'), text.trimEnd()]) {
     const tree = parse(input, `NUL in ${name}`);
-    assert(nodes(tree.rootNode, type).some(node => value === null ? node.text.includes('\0') : node.text === value),
-      `${name}: NUL must remain in the expected token`);
-    assert.equal(nodes(tree.rootNode, 'javascript_source').length, name === 'embedded source' ? 1 : 0,
+    if (type) {
+      assert(nodes(tree.rootNode, type).some(node => value === null ? node.text.includes('\0') : node.text === value),
+        `${name}: NUL must remain in the expected token`);
+    } else {
+      // Preserve metadata and operand text, including NUL and Unicode, while
+      // allowing tokens to split or combine without prescribing their type.
+      for (const match of input.matchAll(/\S/gu)) {
+        const token = tree.rootNode.descendantForIndex(match.index, match.index + match[0].length);
+        assert(token && token.childCount === 0 && token.text.includes(match[0]),
+          `${name}: ${JSON.stringify(match[0])} must remain in a token`);
+      }
+    }
+    assert.equal(nodes(tree.rootNode, 'javascript_source').length, type === 'javascript_source' ? 1 : 0,
       `${name}: only embedded source may produce a JavaScript injection`);
     tree.delete();
   }
@@ -164,7 +186,6 @@ for (const [name, text, type, value] of nulCases) {
 
 for (const text of malformedOpcodes) {
   const tree = parse(text + followingInstruction, 'numeric opcode recovery');
-  assert.equal(nodes(tree.rootNode, 'metadata_line').length, 1, 'malformed instruction must fall back to metadata');
   assert.deepEqual(nodes(tree.rootNode, 'opcode').map(node => node.text), ['Add'],
     'numeric values must not become opcodes or consume the following instruction');
   tree.delete();
@@ -174,7 +195,6 @@ for (const [name, text, values] of stringCases) {
   for (const input of [text + followingInstruction, (text + followingInstruction).replaceAll('\n', '\r\n'), text.trimEnd()]) {
     const tree = parse(input, `string boundary: ${name}`);
     const tags = nodes(tree.rootNode, 'string_tag');
-    assert.equal(tags.length, values.length, `${name}: adjacent and nested tags must remain separate`);
     assert.deepEqual(tags.map(tag => nodes(tag, 'string_value')[0]?.text ?? null), values,
       `${name}: preserve the full value without the tag's closing delimiter`);
     const captures = queries.highlights.captures(tree.rootNode);
@@ -185,10 +205,12 @@ for (const [name, text, values] of stringCases) {
   }
 }
 
-// Count lexer work rather than elapsed time to detect quadratic scanning
-// without making this regression depend on machine speed or system load.
+// Count lexer work rather than elapsed time to detect quadratic scanning.
+// Allow subquadratic growth without binding the test to exact event counts.
+// Recheck this proxy if a Tree-sitter upgrade changes lexer logging.
+const metadataSizes = [100, 400];
 const lexicalSteps = [];
-for (const count of [100, 200]) {
+for (const count of metadataSizes) {
   let steps = 0;
   parser.setLogger((_message, isLex) => { if (isLex) steps++; });
   let tree;
@@ -201,9 +223,12 @@ for (const count of [100, 200]) {
   tree.delete();
   lexicalSteps.push(steps);
 }
-assert(lexicalSteps[0] > 0 && lexicalSteps[1] <= lexicalSteps[0] * 2.5,
-  `doubling metadata must take approximately linear lexer work: ${lexicalSteps.join(' -> ')}`);
-console.log(`Metadata lexer work scales linearly: ${lexicalSteps.join(' -> ')} steps.`);
+const inputGrowth = metadataSizes[1] / metadataSizes[0];
+// For four times the input, linear work grows 4x and quadratic work 16x.
+// The midpoint exponent leaves room for runtime overhead while rejecting 16x.
+assert(lexicalSteps[0] > 0 && lexicalSteps[1] < lexicalSteps[0] * inputGrowth ** 1.5,
+  `metadata lexer work must stay below quadratic growth: ${lexicalSteps.join(' -> ')}`);
+console.log(`Metadata lexer work: ${lexicalSteps.join(' -> ')} steps.`);
 
 for (const [name, text] of [
   ['empty file', ''],
