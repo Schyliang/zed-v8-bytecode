@@ -31,7 +31,33 @@ npm run build
 npm test
 ```
 
-构建会自动下载 WASI SDK；设置 `WASI_SDK_PATH` 可复用已有 SDK。
+### 复用已有 WASI SDK
+
+`npm run build` 会优先读取 `WASI_SDK_PATH`。未设置时，构建会复用本项目缓存的
+WASI SDK，仅在需要时下载。
+
+变量应指向 SDK 根目录，其中需包含 Windows 下的 `bin/clang.exe`，或 macOS/Linux
+下的 `bin/clang`。
+
+PowerShell（当前终端会话）：
+
+```powershell
+$env:WASI_SDK_PATH = 'D:\Tools\wasi-sdk'
+npm run build
+```
+
+macOS/Linux（当前终端会话）：
+
+```sh
+export WASI_SDK_PATH=/opt/wasi-sdk
+npm run build
+```
+
+支持 `WASI_SDK_PATH` 的 Zed 版本在安装和重建开发扩展时也可复用 SDK。先完全退出
+Zed，再从设置了变量的终端执行 `zed .`，使 Zed 继承该设置。也可将变量配置为用户或
+系统环境变量，再重新启动终端和 Zed。已运行的 Zed 不会自动读取新环境。
+
+若路径无效，本项目构建会报错；Zed 会尝试其 SDK 缓存，并在需要时下载。
 
 ## 许可
 

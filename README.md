@@ -32,7 +32,34 @@ npm run build
 npm test
 ```
 
-The build downloads WASI SDK automatically. Set `WASI_SDK_PATH` to reuse an existing SDK.
+### Reuse an existing WASI SDK
+
+Set `WASI_SDK_PATH` to the SDK root directory, containing `bin/clang.exe` on Windows
+or `bin/clang` on macOS/Linux. `npm run build` uses this SDK before checking its local
+cache. Without the variable, it reuses the cached SDK or downloads one as needed.
+
+PowerShell (current terminal session):
+
+```powershell
+$env:WASI_SDK_PATH = 'D:\Tools\wasi-sdk'
+npm run build
+```
+
+macOS/Linux (current terminal session):
+
+```sh
+export WASI_SDK_PATH=/opt/wasi-sdk
+npm run build
+```
+
+Zed versions that support `WASI_SDK_PATH` can also reuse this SDK when installing or
+rebuilding a development extension. Fully quit Zed, then run `zed .` from the terminal
+where you set the variable so it inherits the setting. You can also configure a user
+or system environment variable and restart both the terminal and Zed. A running Zed
+process does not automatically read environment changes.
+
+An invalid SDK path causes the project build to fail; Zed logs a warning and falls
+back to its own SDK cache or download.
 
 ## License
 
