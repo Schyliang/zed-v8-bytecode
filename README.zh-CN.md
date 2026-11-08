@@ -10,7 +10,19 @@
 - 支持 V8 字符串表示和括号匹配。
 - 使用 Zed 的 JavaScript 语法高亮嵌入源码。
 
+## 效果展示
+
+字节码指令、元数据和常量池高亮：
+
+![Zed 中的 V8 Ignition 字节码和常量池高亮](img/bytecode-highlighting.png)
+
+嵌入 JavaScript 源码高亮：
+
+![Zed 中嵌入 JavaScript 源码的高亮](img/embedded-javascript-highlighting.png)
+
 ## 开发安装
+
+官方扩展仓库的 PR 尚未合并，目前请使用开发安装。
 
 需要 Node.js 和 Git。
 
@@ -21,8 +33,13 @@ npm run prepare:dev
 ```
 
 在 Zed 中打开 **Extensions → Install Dev Extension**，选择本项目中的
-`.build/dev-extension/` 目录。打开 `examples/features.ign` 即可查看效果。
+`.build/dev-extension/` 目录。
 修改语法或语言查询后，重新运行上述两个准备命令，并在 Zed 中重新构建开发扩展。
+
+## 使用
+
+在 Zed 中打开已有的 `.ign` 文件即可自动识别语言。若未自动识别，通过语言选择器
+手动选择 **V8 Ignition Bytecode**。可打开 `examples/features.ign` 查看效果。
 
 ## 构建和测试
 

@@ -10,7 +10,20 @@ Syntax highlighting for V8 Ignition bytecode disassembly in Zed, adapted from
 - Supports V8 string representations and bracket matching.
 - Highlights embedded source code using Zed's JavaScript grammar.
 
+## Preview
+
+Bytecode instructions, metadata, and constant pool entries:
+
+![V8 bytecode instructions and constant pool entries highlighted in Zed](img/bytecode-highlighting.png)
+
+Embedded JavaScript source:
+
+![JavaScript source embedded in a V8 bytecode dump highlighted in Zed](img/embedded-javascript-highlighting.png)
+
 ## Development install
+
+The pull request to the official Zed extension repository has not been merged yet.
+Use the development installation below for now.
 
 Requires Node.js and Git.
 
@@ -21,9 +34,15 @@ npm run prepare:dev
 ```
 
 In Zed, open **Extensions → Install Dev Extension** and select
-`.build/dev-extension/` inside this project. Open `examples/features.ign` to try it.
+`.build/dev-extension/` inside this project.
 After changing the grammar or language queries, rerun these two preparation commands
 and rebuild the development extension in Zed.
+
+## Usage
+
+Open an existing `.ign` file in Zed; the language is detected automatically. If it is
+not detected, select **V8 Ignition Bytecode** in the language selector.
+You can try `examples/features.ign` included in this project.
 
 ## Build and test
 
