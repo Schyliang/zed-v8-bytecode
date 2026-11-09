@@ -12,7 +12,7 @@
 
 ; Metadata, constant pools, and operand lists use the same tolerant atoms.
 ((atom) @number
-  (#match? @number "^-?(0x[0-9a-fA-F]+|[0-9]+(\\.[0-9]+)?|[0-9][0-9A-Fa-f]{7,})$"))
+  (#match? @number "^-?(0x[0-9a-fA-F]+|[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?|[0-9A-Fa-f]{8,})$"))
 ((atom) @constant
   (#match? @constant "^[ar][0-9]+$"))
 (quoted_string) @string

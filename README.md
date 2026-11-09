@@ -44,6 +44,12 @@ Open an existing `.ign` file in Zed; the language is detected automatically. If 
 not detected, select **V8 Ignition Bytecode** in the language selector.
 You can try `examples/features.ign` included in this project.
 
+String boundaries use the declared UTF-16 length and enclosing tags, including
+full-length strings from custom V8 builds. V8's variable-width `u#\x` output can
+be ambiguous; the standard truncation marker retains its V8 format meaning.
+Long failed scans consume the examined text on the same line, avoiding repeated
+rescans and preserving parsing after the next newline.
+
 ## Build and test
 
 ```sh
@@ -56,6 +62,10 @@ npm test
 Set `WASI_SDK_PATH` to the SDK root directory, containing `bin/clang.exe` on Windows
 or `bin/clang` on macOS/Linux. `npm run build` uses this SDK before checking its local
 cache. Without the variable, it reuses the cached SDK or downloads one as needed.
+
+Automatically downloaded archives are checked against pinned SHA-256 digests from
+the official release before extraction. Incomplete caches and older caches without
+a verification marker are recreated. `WASI_SDK_PATH` uses the SDK you specify directly.
 
 PowerShell (current terminal session):
 

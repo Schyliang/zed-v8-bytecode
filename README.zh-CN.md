@@ -41,6 +41,10 @@ npm run prepare:dev
 在 Zed 中打开已有的 `.ign` 文件即可自动识别语言。若未自动识别，通过语言选择器
 手动选择 **V8 Ignition Bytecode**。可打开 `examples/features.ign` 查看效果。
 
+字符串结束位置结合声明长度和外层标签判断，支持自定义 V8 输出的完整长字符串。
+V8 的 `u#\x` 输出可能存在歧义；标准截断标记优先按 V8 格式识别。
+长度失配的长预读会一次消费，并在换行后恢复正常解析，避免重复扫描。
+
 ## 构建和测试
 
 ```sh
@@ -52,6 +56,9 @@ npm test
 
 `npm run build` 会优先读取 `WASI_SDK_PATH`。未设置时，构建会复用本项目缓存的
 WASI SDK，仅在需要时下载。
+
+自动下载的压缩包会在解压前校验官方发布文件的固定 SHA-256 摘要。未完成或没有
+校验标记的旧缓存会重新创建；`WASI_SDK_PATH` 直接使用你指定的 SDK。
 
 变量应指向 SDK 根目录，其中需包含 Windows 下的 `bin/clang.exe`，或 macOS/Linux
 下的 `bin/clang`。

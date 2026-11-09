@@ -58,6 +58,9 @@ const stringCases = [
   ['wide quoted string', '0: <String[2]: uc"中文">\n', ['"中文"']],
   ['e-prefixed quoted string', '0: <String[4]: e"demo">\n', ['"demo"']],
   ['greater-than-prefixed quoted string', '0: <String[4]: >"demo">\n', ['"demo"']],
+  ['custom V8 long byte string', `0: <String[2000]: #${'a'.repeat(2000)}>\n`, ['a'.repeat(2000)]],
+  ['custom V8 long comparison', `0: <String[1025]: #a>${'b'.repeat(1023)}>\n`, ['a>' + 'b'.repeat(1023)]],
+  ['custom V8 long wide string', `0: <Map <String[2048]: u#${'\\x4e2d'.repeat(2048)}>>\n`, ['\\x4e2d'.repeat(2048)]],
   ['full-length string', `0: <String[1024]: #${'>'.repeat(1024)}>\n`, ['>'.repeat(1024)]],
   ['truncated string', '0: <String[1025]: #...<truncated>>> <String[1]: #x>\n', ['...<truncated>>', 'x']],
 ];
@@ -267,8 +270,7 @@ editedTree.delete();
 reparsed.delete();
 console.log('Incremental source edits preserve the JavaScript injection boundary.');
 
-// The external scanner retains the declared length and encoding between tokens.
-// Editing either must invalidate the value just as a fresh parse would.
+// Length and encoding edits must invalidate the value just as a fresh parse would.
 for (const [before, oldText, newText] of [
   ['0: <String[3]: #a>b> <String[1]: #x>\n', '3', '2'],
   ['0: <String[3]: #a>b> <String[1]: #x>\n', 'a>b', 'a>>'],
@@ -307,4 +309,6 @@ for (const [before, oldText, newText] of [
 console.log('Incremental string length, encoding, delimiter, and Unicode edits match full parses.');
 for (const query of Object.values(queries)) query.delete();
 parser.delete();
+await import('./test-parser-regressions.mjs');
+await import('./test-build-regressions.mjs');
 console.log('Parser, highlighting, JavaScript injection, and bracket checks passed.');
