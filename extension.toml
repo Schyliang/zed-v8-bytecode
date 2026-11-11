@@ -8,5 +8,5 @@ repository = "https://github.com/Schyliang/zed-v8-bytecode"
 
 [grammars.ignition]
 repository = "https://github.com/Schyliang/zed-v8-bytecode"
-rev = "1262dfaa43bdf486d238d310c897f1f62bc90d18"
+rev = "1638d2ede987b975872cc0d4acace5c2a1203c57"
 path = "tree-sitter-ignition"
