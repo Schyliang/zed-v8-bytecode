@@ -87,6 +87,18 @@ for (const [name, text] of [
 }
 const config = path.join(root, '.build', 'tree-sitter-config.json');
 await writeFile(config, JSON.stringify({ 'parser-directories': [root] }));
+// Exercise recovery in Zed's native runtime as well as the browser runtime.
+const editingFixture = 'diagnostic "' + '\\"'.repeat(1600) + '\n' + followingInstruction
+  + "0: <String[4]: c'" + "\\'".repeat(1600) + '\n' + followingInstruction
+  + ' - source code: () { return 1; }\n - properties: 0x123 <FixedArray[0]>\n' + followingInstruction;
+const editingFiles = [];
+for (const [name, text] of [
+  ['lf', editingFixture], ['crlf', editingFixture.replaceAll('\n', '\r\n')], ['eof', editingFixture.trimEnd()],
+]) {
+  const file = path.join(nativeCache, `editing-${name}.ign`);
+  await writeFile(file, text);
+  editingFiles.push(file);
+}
 const cli = path.join(root, 'node_modules', 'tree-sitter-cli', process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter');
 const native = spawnSync(cli, ['parse', '--wasm', '--quiet', '--stat', '--config-path', config,
   ...['test.ign', 'test2.ign', 'test3.ign'].map(name => path.join(root, 'examples', 'upstream', name)),
@@ -94,6 +106,7 @@ const native = spawnSync(cli, ['parse', '--wasm', '--quiet', '--stat', '--config
   ...nulFiles,
   opcodeFixture,
   ...stringFiles,
+  ...editingFiles,
 ], { cwd: path.join(root, 'tree-sitter-ignition'), stdio: 'inherit',
   env: { ...process.env, TREE_SITTER_LIBDIR: nativeCache } });
 if (native.error) throw native.error;
@@ -310,5 +323,6 @@ console.log('Incremental string length, encoding, delimiter, and Unicode edits m
 for (const query of Object.values(queries)) query.delete();
 parser.delete();
 await import('./test-parser-regressions.mjs');
+await import('./test-source-regressions.mjs');
 await import('./test-build-regressions.mjs');
 console.log('Parser, highlighting, JavaScript injection, and bracket checks passed.');

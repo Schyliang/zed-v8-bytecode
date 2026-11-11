@@ -230,6 +230,38 @@ for (const input of [
 ]) {
   for (const variant of variants(input)) checked(variant).delete();
 }
+// An unfinished quoted value stays in one token, including its last escape,
+// while the physical newline remains available to end the diagnostic line.
+for (const quote of ['"', "'"]) {
+  for (const body of ['', 'unfinished', 'a\\' + quote + 'b', 'a\\' + quote,
+    'a\\', 'a\\\\', '😀中\0\\\0' + quote]) {
+    const value = quote + body;
+    for (const [prefix, type] of [
+      ['', 'quoted_string'], ['diagnostic ', 'quoted_string'],
+      ['0: <String[3]: c', 'string_value'], ['0: <Map <String[3]: c', 'string_value'],
+    ]) {
+      const line = prefix + value + '\n';
+      for (const input of [...variants(line), ...variants(line + instruction)]) {
+        const tree = checked(input);
+        assert.deepEqual(texts(tree, type), [value], 'unfinished quoted value preserves every character');
+        assert.deepEqual(texts(tree, 'opcode'), input.includes(instruction.trimEnd()) ? ['Add'] : []);
+        const node = descendants(tree, type)[0];
+        assert.equal(node.endPosition.row, 0);
+        assert(highlights.captures(tree.rootNode).some(c => c.name === 'string' && c.node.id === node.id));
+        tree.delete();
+      }
+    }
+  }
+  for (const body of ['', 'a\\' + quote + 'b', 'a\\\\', '😀中\0\\\0']) {
+    const value = quote + body + quote;
+    for (const input of variants('0: <String[3]: c' + value + '> <String[1]: #x>\n' + instruction)) {
+      const tree = checked(input);
+      assert.deepEqual(texts(tree, 'string_value'), [value, 'x'], 'closing quotes preserve adjacent tags');
+      assert.deepEqual(texts(tree, 'opcode'), ['Add']);
+      tree.delete();
+    }
+  }
+}
 for (const input of variants('/* first\0line\n * second */\n' + instruction)) {
   const tree = checked(input);
   assert.equal(descendants(tree, 'comment').length, 1);
@@ -335,7 +367,7 @@ function edit(before, oldText, newText) {
   const incremental = loggedParse(after, oldTree);
   const full = parser.parse(after);
   assert.equal(incremental.tree.rootNode.toString(), full.rootNode.toString());
-  for (const type of ['string_tag', 'string_value', 'object_tag', 'object_type', 'instruction', 'opcode', 'ERROR']) {
+  for (const type of ['string_tag', 'string_value', 'quoted_string', 'object_tag', 'object_type', 'instruction', 'opcode', 'ERROR']) {
     const spans = tree => descendants(tree, type).map(n => [n.text, n.startIndex, n.endIndex, n.startPosition, n.endPosition]);
     assert.deepEqual(spans(incremental.tree), spans(full), type);
   }
@@ -344,6 +376,23 @@ function edit(before, oldText, newText) {
   return incremental.stats;
 }
 const trailingInstructions = instruction.repeat(1000);
+for (const quote of ['"', "'"]) {
+  const body = ('\\' + quote).repeat(1600) + 'TAIL';
+  for (const prefix of ['diagnostic ', '0: <Map <String[3]: c']) {
+    for (const newline of ['\n', '\r\n']) {
+      for (const [before, oldText, newText] of [
+        [prefix + quote + body + newline, 'TAIL', 'TAIL' + quote],
+        [prefix + quote + body + quote + newline, 'TAIL' + quote, 'TAIL'],
+        [prefix + quote + body + '\\' + newline, 'TAIL\\', 'TAIL\\' + quote],
+        [prefix + quote + body + '\\' + quote + newline, 'TAIL\\' + quote, 'TAIL\\'],
+      ]) {
+        const stats = edit(before + trailingInstructions, oldText, newText);
+        assert(stats.reusedInstructions >= 999, JSON.stringify(stats));
+        assert(stats.externalMismatch < 20, JSON.stringify(stats));
+      }
+    }
+  }
+}
 for (const [before, oldText, newText] of [
   ['0: <Map [1 < 2] <String[3]: u#\\x4e2d\\x6587>>>\n', '2]', 'Foo]'],
   ['0: <Map [1 < Foo] <String[3]: u#\\x4e2d\\x6587>>>\n', 'Foo]', '2]'],
@@ -427,6 +476,9 @@ for (const [label, make] of [
   ['implicit object endings in parentheses', n => '<Map (1 < Foo < Bar) <String[3]: u#\\x4e2d\\x6587>>> '.repeat(n) + '\n'],
   ['long closing run', n => '<String[1]: #x' + '>'.repeat(n) + '\n'],
   ['unfinished block comments', n => '/* x '.repeat(n) + '\n'],
+  ['unfinished escaped double quotes', n => '"' + '\\"'.repeat(n) + '\n' + instruction],
+  ['unfinished escaped single quotes', n => "'" + "\\'".repeat(n) + '\n' + instruction],
+  ['unfinished quoted string tags', n => '<Map <String[3]: c"' + '\\"'.repeat(n) + '\\\n' + instruction],
 ]) {
   const counts = [100, 400, 1600];
   const steps = counts.map(count => {

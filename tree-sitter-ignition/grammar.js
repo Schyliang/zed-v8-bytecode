@@ -60,11 +60,13 @@ module.exports = grammar({
         seq(optional(choice('c', 'e', '>')), alias($.quoted_string, $.string_value)),
       ), optional(alias($._string_close, '>')),
     )),
+    // Consume unfinished quotes through the physical line end. Retrying at
+    // each escaped quote would repeatedly scan the same remaining suffix.
     quoted_string: _ => token(choice(
       seq('"', repeat(choice('\0', /[^"\\\r\n]+/,
-        seq('\\', choice(prec(1, '\0'), /[^\r\n]/)))), '"'),
+        seq('\\', choice(prec(1, '\0'), /[^\r\n]/)))), optional(choice('"', '\\'))),
       seq("'", repeat(choice('\0', /[^'\\\r\n]+/,
-        seq('\\', choice(prec(1, '\0'), /[^\r\n]/)))), "'"),
+        seq('\\', choice(prec(1, '\0'), /[^\r\n]/)))), optional(choice("'", '\\'))),
     )),
     comment: _ => token(choice(
       seq('//', repeat(choice('\0', /[^\r\n]+/))),
@@ -79,7 +81,7 @@ module.exports = grammar({
       /-?(?:0x[0-9a-fA-F]+|[0-9]+(?:\.[0-9]+)?[eE][+-]?[0-9]+|[0-9][0-9a-fA-F]*(?:\.[0-9]+)?)/,
     )),
     _punctuation: _ => choice('@', ':', ',', '#', '-', '=', '*', '/', ';',
-      '{', '}', '"', "'", '<'),
+      '{', '}', '<'),
     other: _ => token(prec(-10, repeat1(choice(
       '\0', /[^\sA-Za-z0-9_$@:,#=\-*/;{}<>\[\]()"']+/,
     )))),

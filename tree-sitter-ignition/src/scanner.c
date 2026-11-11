@@ -355,10 +355,27 @@ static bool scan_unquoted_string(Scanner *s, TSLexer *lexer, const bool *valid_s
   return true;
 }
 
-static bool script_footer(TSLexer *lexer) {
-  if (!literal(lexer, " - script: ")) return false;
-  if (!scan_hex_number(lexer)) return false;
-  if (!literal(lexer, " <Script>")) return false;
+static bool source_footer(TSLexer *lexer) {
+  if (!literal(lexer, " - ")) return false;
+  if (lexer->lookahead == 's') {
+    if (!literal(lexer, "script: ") || !scan_hex_number(lexer) ||
+        !literal(lexer, " <Script>")) return false;
+  } else {
+    // JSFunctionPrint follows its source with JSObjectPrintBody, whose first
+    // line is properties, rather than SharedFunctionInfoPrint's script line.
+    // A Smi properties/hash field prints no value; heap storage prints Brief.
+    if (!literal(lexer, "properties: ")) return false;
+    if (!at_line_end(lexer)) {
+      if (!scan_hex_number(lexer) || !literal(lexer, " <") ||
+          !is_alpha(lexer->lookahead)) return false;
+      while (!at_line_end(lexer) && lexer->lookahead != '>') {
+        if (lexer->lookahead == '<') return false;
+        lexer->advance(lexer, false);
+      }
+      if (lexer->lookahead != '>') return false;
+      lexer->advance(lexer, false);
+    }
+  }
   if (lexer->lookahead == '\r') lexer->advance(lexer, false);
   return lexer->lookahead == '\n' || lexer->eof(lexer);
 }
@@ -368,7 +385,7 @@ static bool scan_javascript_source(TSLexer *lexer) {
   lexer->result_symbol = JAVASCRIPT_SOURCE;
   while (!lexer->eof(lexer)) {
     lexer->mark_end(lexer);
-    if (lexer->get_column(lexer) == 0 && script_footer(lexer)) return consumed;
+    if (lexer->get_column(lexer) == 0 && source_footer(lexer)) return consumed;
     if (lexer->eof(lexer)) break;
     lexer->advance(lexer, false);
     consumed = true;
