@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -39,6 +39,7 @@ const seenTargetHeaders = [];
 const connectRequests = [];
 let proxyMode = 'forward';
 let archiveBody = Buffer.from('download fixture');
+let concurrentDownloads = 0;
 let slowClosed;
 const server = https.createServer({ key, cert }, (req, res) => {
   seenTargetHeaders.push(req.headers);
@@ -52,6 +53,10 @@ const server = https.createServer({ key, cert }, (req, res) => {
     res.writeHead(200); res.write('partial');
   }
   else if (req.url === '/archive') res.end(archiveBody);
+  else if (req.url === '/archive-concurrent') {
+    concurrentDownloads++;
+    setTimeout(() => res.end(archiveBody), 150);
+  }
   else res.end('complete');
 });
 server.on('connection', track);
@@ -120,6 +125,123 @@ try {
   const digest = createHash('sha256').update(archiveBody).digest('hex');
   await verifyArchive(fixtureArchive, digest);
   await assert.rejects(verifyArchive(fixtureArchive, '0'.repeat(64)), { code: 'ERR_SDK_CHECKSUM' });
+
+  // Independent Node processes must share one installation, including its download.
+  const worker = path.join(temporary, 'sdk-install-worker.mjs');
+  await writeFile(worker, `
+import assert from 'node:assert/strict';
+import { readFile, stat } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
+import { installSdk } from ${JSON.stringify(new URL('./build.mjs', import.meta.url).href)};
+process.once('message', async install => {
+  try {
+    const compiler = await installSdk(install);
+    const identity = info => [info.dev, info.ino, info.birthtimeMs];
+    const before = identity(await stat(compiler));
+    await delay(200);
+    assert.deepEqual(identity(await stat(compiler)), before, 'a completed SDK must not be replaced by another installer');
+    process.send({ compiler, content: await readFile(compiler, 'utf8'), identity: before });
+  } catch (error) {
+    process.send({ error: error.message, code: error.code });
+    process.exitCode = 1;
+  } finally { process.disconnect(); }
+});
+process.send('ready');
+`);
+  async function concurrentInstalls(install, expectedError) {
+    const runs = Array.from({ length: 2 }, () => {
+      const child = spawn(process.execPath, [worker], { cwd: temporary, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      let output = '', errors = '', result;
+      child.stdout.on('data', chunk => { output += chunk; });
+      child.stderr.on('data', chunk => { errors += chunk; });
+      const ready = new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.on('message', message => {
+          if (message === 'ready') resolve();
+          else result = message;
+        });
+        child.once('exit', code => reject(new Error(`SDK worker exited before starting: ${code}; ${errors}`)));
+      });
+      const watchdog = setTimeout(() => child.kill(), 15000);
+      const done = new Promise(resolve => {
+        child.once('close', (code, signal) => {
+          clearTimeout(watchdog);
+          resolve({ code, signal, result, output, errors });
+        });
+      });
+      return { child, ready, done };
+    });
+    try {
+      await Promise.all(runs.map(run => run.ready));
+      for (const run of runs) run.child.send(install);
+      const completed = await Promise.all(runs.map(run => run.done));
+      for (const run of completed) {
+        assert.equal(run.signal, null, `SDK worker did not finish: ${run.errors}`);
+        assert.equal(run.code, expectedError ? 1 : 0, run.result?.error || run.errors);
+        if (expectedError) assert.equal(run.result?.code, expectedError);
+        else {
+          assert.equal(run.result?.compiler, path.join(install.cache, name, 'bin', executable));
+          assert.equal(run.result.content, 'fixture');
+        }
+      }
+      if (!expectedError) {
+        assert.deepEqual(completed[0].result.identity, completed[1].result.identity,
+          'both installers must use the same completed compiler file');
+      }
+    } finally {
+      for (const run of runs) {
+        if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill();
+      }
+      await Promise.all(runs.map(run => run.done));
+    }
+  }
+  const concurrentInstall = { name, digest, executable, url: `${base}/archive-concurrent`, requestOptions: options };
+  for (const mode of ['cached archive', 'download', 'incomplete SDK']) {
+    const concurrentCache = path.join(temporary, `concurrent-${mode.replaceAll(' ', '-')}`);
+    await mkdir(concurrentCache, { recursive: true });
+    if (mode !== 'download') await writeFile(path.join(concurrentCache, `${name}.tar.gz`), archiveBody);
+    if (mode === 'incomplete SDK') {
+      await mkdir(path.join(concurrentCache, name, 'bin'), { recursive: true });
+      await writeFile(path.join(concurrentCache, name, 'bin', executable), 'old incomplete SDK');
+    }
+    const downloadsBefore = concurrentDownloads;
+    await concurrentInstalls({ ...concurrentInstall, cache: concurrentCache });
+    assert.equal(concurrentDownloads - downloadsBefore, mode === 'download' ? 1 : 0, 'concurrent installers must publish one download');
+    for (const file of required) assert.equal(await readFile(path.join(concurrentCache, name, file), 'utf8'), 'fixture');
+    assert.equal((await readFile(path.join(concurrentCache, name, '.verified-sha256'), 'utf8')).trim(), digest);
+    assert.deepEqual((await readdir(concurrentCache)).sort(), [name, `${name}.tar.gz`].sort(), 'successful installers must release locks and temporary files');
+    // A complete SDK remains readable even if an interrupted installer left a lock.
+    const leftoverLock = path.join(concurrentCache, `${name}.install-lock`);
+    await writeFile(leftoverLock, 'unknown owner\n');
+    await concurrentInstalls({ ...concurrentInstall, cache: concurrentCache, url: 'https://example.invalid/offline' });
+    assert.equal(await readFile(leftoverLock, 'utf8'), 'unknown owner\n', 'read-only reuse must not remove an unowned lock');
+    await rm(leftoverLock);
+  }
+  const concurrentFailure = path.join(temporary, 'concurrent-invalid-digest');
+  await concurrentInstalls({ ...concurrentInstall, cache: concurrentFailure, digest: '0'.repeat(64) }, 'ERR_SDK_CHECKSUM');
+  assert.deepEqual(await readdir(concurrentFailure), [], 'failed installers must preserve integrity errors and release their resources');
+  await concurrentInstalls({ ...concurrentInstall, cache: concurrentFailure });
+  assert.equal((await readFile(path.join(concurrentFailure, name, '.verified-sha256'), 'utf8')).trim(), digest);
+
+  const interruptedCache = path.join(temporary, 'interrupted-installer');
+  await mkdir(interruptedCache);
+  await writeFile(path.join(interruptedCache, `${name}.tar.gz`), archiveBody);
+  const stoppedOwner = spawnSync(process.execPath, ['-e', ''], { cwd: temporary });
+  assert.equal(stoppedOwner.status, 0);
+  const interruptedLock = path.join(interruptedCache, `${name}.install-lock`);
+  await writeFile(interruptedLock, `${stoppedOwner.pid}\n`);
+  await assert.rejects(installSdk({ ...concurrentInstall, cache: interruptedCache }), error =>
+    error.code === 'ERR_SDK_LOCK_INTERRUPTED' && error.message.includes(interruptedLock));
+  assert.equal(await readFile(interruptedLock, 'utf8'), `${stoppedOwner.pid}\n`, 'an interrupted lock must remain available for diagnosis');
+  await rm(interruptedLock);
+  await installSdk({ ...concurrentInstall, cache: interruptedCache, url: 'https://example.invalid/offline' });
+  assert.deepEqual((await readdir(interruptedCache)).sort(), [name, `${name}.tar.gz`].sort());
+  // Unexpected filesystem errors are not treated as a successful competing install.
+  const blockedCache = path.join(temporary, 'invalid-lock-file');
+  const blockedLock = path.join(blockedCache, `${name}.install-lock`);
+  await mkdir(blockedLock, { recursive: true });
+  await assert.rejects(installSdk({ ...concurrentInstall, cache: blockedCache }), { code: 'EISDIR' });
+
   const cache = path.join(temporary, 'sdk-cache');
   const sdk = path.join(cache, name);
   // An interrupted old extraction has clang but lacks the sysroot and marker.
@@ -177,9 +299,68 @@ try {
   assert(manifest.includes(pathToFileURL(snapshot).href));
   assert(!manifest.includes('{{GRAMMAR_REPOSITORY}}'));
 
+  // Exported Git locations must never redirect a snapshot into another repository.
+  const external = path.join(temporary, 'external-repository');
+  for (const [file, text] of Object.entries({
+    'src/original.c': 'original source', 'grammar.js': 'original grammar',
+    LICENSE: 'original license', 'NOTICE.md': 'original notice', 'licenses/original.txt': 'original license',
+  })) {
+    await mkdir(path.dirname(path.join(external, file)), { recursive: true });
+    await writeFile(path.join(external, file), text);
+  }
+  cli('git', ['init', '--quiet', '--initial-branch=main'], external);
+  cli('git', ['add', '.'], external);
+  const externalTree = cli('git', ['write-tree'], external);
+  const externalRevision = cli('git', ['-c', 'user.name=Build Test', '-c', 'user.email=build-test@localhost',
+    'commit-tree', externalTree, '-m', 'external repository fixture'], external);
+  cli('git', ['update-ref', 'refs/heads/main', externalRevision], external);
+  await writeFile(path.join(external, 'src/original.c'), 'uncommitted external edit');
+  await writeFile(path.join(external, 'untracked.txt'), 'untracked external file');
+  const externalGit = path.join(external, '.git');
+  const configBefore = await readFile(path.join(externalGit, 'config'));
+  const indexBefore = await readFile(path.join(externalGit, 'index'));
+  const statusBefore = cli('git', ['status', '--porcelain'], external);
+  const alternateIndex = path.join(temporary, 'external-index');
+  await writeFile(alternateIndex, indexBefore);
+  const globalConfig = path.join(temporary, 'snapshot-gitconfig');
+  await writeFile(globalConfig, '[init]\n defaultBranch = snapshot-default\n');
+  for (const variables of [
+    { GIT_DIR: externalGit },
+    { GIT_DIR: externalGit, GIT_WORK_TREE: external },
+    { GIT_DIR: externalGit, GIT_WORK_TREE: external, GIT_COMMON_DIR: externalGit,
+      GIT_INDEX_FILE: alternateIndex, GIT_OBJECT_DIRECTORY: path.join(externalGit, 'objects'),
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(externalGit, 'objects'), GIT_NAMESPACE: 'external',
+      GIT_SHALLOW_FILE: path.join(temporary, 'external-shallow') },
+  ]) {
+    variables.GIT_CONFIG_GLOBAL = globalConfig;
+    const previous = Object.fromEntries(Object.keys(variables).map(key => [key, process.env[key]]));
+    try {
+      Object.assign(process.env, variables);
+      await prepareDev(project);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    assert.deepEqual(await readFile(path.join(externalGit, 'config')), configBefore, 'snapshot must preserve external Git configuration');
+    assert.deepEqual(await readFile(path.join(externalGit, 'index')), indexBefore, 'snapshot must preserve the external staging index');
+    assert.deepEqual(await readFile(alternateIndex), indexBefore, 'snapshot must preserve an exported alternate index');
+    assert.equal(cli('git', ['rev-parse', 'main'], external), externalRevision, 'snapshot must preserve the external branch');
+    assert.equal(cli('git', ['status', '--porcelain'], external), statusBefore, 'snapshot must preserve external worktree changes');
+    assert.equal(await readFile(path.join(external, 'src/original.c'), 'utf8'), 'uncommitted external edit');
+    assert.equal(await readFile(path.join(snapshot, 'src/parser.c'), 'utf8'), 'parser');
+    assert.equal(await realpath(cli('git', ['rev-parse', '--absolute-git-dir'], snapshot)), await realpath(path.join(snapshot, '.git')), 'snapshot must have its own Git repository');
+    assert.equal(cli('git', ['symbolic-ref', 'HEAD'], snapshot), 'refs/heads/snapshot-default', 'ordinary user Git configuration must remain available');
+    const snapshotRevision = cli('git', ['rev-parse', 'main'], snapshot);
+    assert.notEqual(spawnSync('git', ['cat-file', '-e', snapshotRevision], { cwd: external }).status, 0,
+      'snapshot objects must not be written to the exported object directory');
+    assert((await readFile(path.join(extension, 'extension.toml'), 'utf8')).includes(snapshotRevision));
+  }
+
   assert.equal(Object.keys(sdkChecksums).length, 6);
   assert(Object.values(sdkChecksums).every(hash => /^[a-f0-9]{64}$/.test(hash)));
-  console.log('Build regressions passed: HTTPS/CONNECT, stream causes, verified SDK recovery, and clean development snapshots.');
+  console.log('Build regressions passed: HTTPS/CONNECT, verified SDK recovery and concurrent installs, and isolated development snapshots.');
 } finally {
   for (const socket of sockets) socket.destroy();
   await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => proxy.close(resolve))]);

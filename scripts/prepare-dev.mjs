@@ -6,10 +6,24 @@ import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 function git(args, snapshot) {
-  const result = spawnSync('git', args, {
+  const env = { ...process.env };
+  // Hooks and Git wrappers can export these for their own repository.
+  // Keep tool/user configuration, but never reuse another repository's state.
+  const repositoryVariables = new Set([
+    'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_COMMON_DIR',
+    'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE', 'GIT_PREFIX', 'GIT_INTERNAL_SUPER_PREFIX',
+    'GIT_SHALLOW_FILE', 'GIT_GRAFT_FILE', 'GIT_REPLACE_REF_BASE',
+  ]);
+  for (const key of Object.keys(env)) {
+    if (repositoryVariables.has(key.toUpperCase())) delete env[key];
+  }
+  const result = spawnSync('git', [
+    '--git-dir', path.join(snapshot, '.git'), '--work-tree', snapshot, ...args,
+  ], {
     cwd: snapshot, encoding: 'utf8',
     // Keep the generated artifact reproducible and separate from user identity.
-    env: { ...process.env, GIT_AUTHOR_NAME: 'Local Grammar Build',
+    env: { ...env, GIT_AUTHOR_NAME: 'Local Grammar Build',
       GIT_AUTHOR_EMAIL: 'grammar-build@localhost', GIT_COMMITTER_NAME: 'Local Grammar Build',
       GIT_COMMITTER_EMAIL: 'grammar-build@localhost',
       GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' },

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { spawnSync } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { sdkChecksums } from './wasi-sdk-checksums.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -147,72 +148,134 @@ async function sdkFilesReady(sdk, executable) {
   return true;
 }
 
+async function sdkVerified(sdk, executable, digest) {
+  if (!await sdkFilesReady(sdk, executable)) return false;
+  try {
+    return (await readFile(path.join(sdk, '.verified-sha256'), 'utf8')).trim() === digest;
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error.code)) return false;
+    throw error;
+  }
+}
+
+async function releaseSdkLock(owner, lock) {
+  await owner.close().catch(error => console.error(`SDK lock close failed: ${error.message}`));
+  await unlink(lock).catch(error => console.error(`SDK lock cleanup failed: ${error.message}`));
+}
+
+async function acquireSdkLock(lock) {
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (true) {
+    let owner;
+    try { owner = await open(lock, 'wx'); } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    if (owner) {
+      try { await owner.writeFile(`${process.pid}\n`); } catch (error) {
+        await releaseSdkLock(owner, lock);
+        throw error;
+      }
+      return owner;
+    }
+    let contents;
+    try { contents = await readFile(lock, 'utf8'); } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (/^[1-9]\d*\n$/.test(contents)) {
+      try { process.kill(Number(contents.trim()), 0); } catch (error) {
+        if (error.code === 'ESRCH') {
+          // The previous owner may have released the file just before exiting.
+          let current;
+          try { current = await readFile(lock, 'utf8'); } catch (readError) {
+            if (readError.code === 'ENOENT') continue;
+            throw readError;
+          }
+          if (current !== contents) continue;
+          // Do not race other waiters by removing a lock we do not own.
+          throw Object.assign(new Error(`Interrupted SDK installation; remove its lock before retrying: ${lock}`),
+            { code: 'ERR_SDK_LOCK_INTERRUPTED' });
+        }
+        if (error.code !== 'EPERM') throw error;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw Object.assign(new Error(`Timed out waiting for SDK installation lock: ${lock}`),
+        { code: 'ERR_SDK_LOCK_TIMEOUT' });
+    }
+    await delay(100);
+  }
+}
+
 export async function installSdk({ cache, name, digest, url, executable, requestOptions }) {
   if (!/^wasi-sdk-\d+\.\d+-(?:arm64|x86_64)-(?:linux|macos|windows)$/.test(name)) {
     throw new Error('Invalid WASI SDK cache name');
   }
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid WASI SDK SHA-256');
   const sdk = path.join(cache, name);
-  const marker = path.join(sdk, '.verified-sha256');
-  if (await sdkFilesReady(sdk, executable)) {
-    try { if ((await readFile(marker, 'utf8')).trim() === digest) return path.join(sdk, 'bin', executable); } catch (error) {
-      if (!['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error.code)) throw error;
-    }
-  }
+  if (await sdkVerified(sdk, executable, digest)) return path.join(sdk, 'bin', executable);
   await mkdir(cache, { recursive: true });
-  const archive = path.join(cache, `${name}.tar.gz`);
-  if (await exists(archive)) {
-    try { await verifyArchive(archive, digest); } catch (error) {
-      // Replace corrupt cached downloads rather than repeating the same failure.
-      if (error.code !== 'ERR_SDK_CHECKSUM') throw error;
-      console.error(error.message);
-      await rm(archive, { force: true });
-    }
-  }
-  if (!await exists(archive)) {
-    const temporary = `${archive}.${randomUUID()}.partial`;
-    console.log(`Downloading ${name}...`);
-    try {
-      const response = await request(url, requestOptions);
-      let received = 0, reported = 0;
-      response.on('data', chunk => {
-        received += chunk.length;
-        if (received - reported >= 64 * 1024 * 1024) {
-          reported = received;
-          console.log(`Downloaded ${Math.round(received / 1024 / 1024)} MiB`);
-        }
-      });
-      await pipeline(response, createWriteStream(temporary));
-      await verifyArchive(temporary, digest);
-      await rename(temporary, archive);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(cleanup => console.error(`Temporary download cleanup failed: ${cleanup.message}`));
-      throw error;
-    }
-  }
-  const staging = await mkdtemp(path.join(cache, '.sdk-extract-'));
-  let preserveStaging = false;
+  const lock = path.join(cache, `${name}.install-lock`);
+  const owner = await acquireSdkLock(lock);
   try {
-    console.log('Extracting WASI SDK...');
-    // Relative paths prevent GNU tar interpreting a Windows drive as a host.
-    run('tar', ['-xzf', path.basename(archive), '-C', path.basename(staging)], cache);
-    const extracted = path.join(staging, name);
-    if (!await sdkFilesReady(extracted, executable)) throw new Error('Extracted WASI SDK is missing compiler or sysroot files');
-    await writeFile(path.join(extracted, '.verified-sha256'), `${digest}\n`);
-    const backup = path.join(staging, 'previous-sdk');
-    const hadPrevious = await exists(sdk);
-    if (hadPrevious) await rename(sdk, backup);
-    try { await rename(extracted, sdk); } catch (error) {
-      if (hadPrevious) await rename(backup, sdk).catch(restore => {
-        preserveStaging = true;
-        console.error(`SDK cache restore failed: ${restore.message}; previous cache remains in ${backup}`);
-      });
-      throw error;
+    // Another process may have completed installation while this one waited.
+    if (await sdkVerified(sdk, executable, digest)) return path.join(sdk, 'bin', executable);
+    const archive = path.join(cache, `${name}.tar.gz`);
+    if (await exists(archive)) {
+      try { await verifyArchive(archive, digest); } catch (error) {
+        // Replace corrupt cached downloads rather than repeating the same failure.
+        if (error.code !== 'ERR_SDK_CHECKSUM') throw error;
+        console.error(error.message);
+        await rm(archive, { force: true });
+      }
     }
+    if (!await exists(archive)) {
+      const temporary = `${archive}.${randomUUID()}.partial`;
+      console.log(`Downloading ${name}...`);
+      try {
+        const response = await request(url, requestOptions);
+        let received = 0, reported = 0;
+        response.on('data', chunk => {
+          received += chunk.length;
+          if (received - reported >= 64 * 1024 * 1024) {
+            reported = received;
+            console.log(`Downloaded ${Math.round(received / 1024 / 1024)} MiB`);
+          }
+        });
+        await pipeline(response, createWriteStream(temporary));
+        await verifyArchive(temporary, digest);
+        await rename(temporary, archive);
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(cleanup => console.error(`Temporary download cleanup failed: ${cleanup.message}`));
+        throw error;
+      }
+    }
+    const staging = await mkdtemp(path.join(cache, '.sdk-extract-'));
+    let preserveStaging = false;
+    try {
+      console.log('Extracting WASI SDK...');
+      // Relative paths prevent GNU tar interpreting a Windows drive as a host.
+      run('tar', ['-xzf', path.basename(archive), '-C', path.basename(staging)], cache);
+      const extracted = path.join(staging, name);
+      if (!await sdkFilesReady(extracted, executable)) throw new Error('Extracted WASI SDK is missing compiler or sysroot files');
+      await writeFile(path.join(extracted, '.verified-sha256'), `${digest}\n`);
+      const backup = path.join(staging, 'previous-sdk');
+      const hadPrevious = await exists(sdk);
+      if (hadPrevious) await rename(sdk, backup);
+      try { await rename(extracted, sdk); } catch (error) {
+        if (hadPrevious) await rename(backup, sdk).catch(restore => {
+          preserveStaging = true;
+          console.error(`SDK cache restore failed: ${restore.message}; previous cache remains in ${backup}`);
+        });
+        throw error;
+      }
+    } finally {
+      if (!preserveStaging) await rm(staging, { recursive: true, force: true }).catch(cleanup => console.error(`SDK staging cleanup failed: ${cleanup.message}`));
+    }
+    return path.join(sdk, 'bin', executable);
   } finally {
-    if (!preserveStaging) await rm(staging, { recursive: true, force: true }).catch(cleanup => console.error(`SDK staging cleanup failed: ${cleanup.message}`));
+    await releaseSdkLock(owner, lock);
   }
-  return path.join(sdk, 'bin', executable);
 }
 
 async function compiler() {
