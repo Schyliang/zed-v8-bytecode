@@ -49,6 +49,9 @@ full-length strings from custom V8 builds. V8's variable-width `u#\x` output can
 be ambiguous; the standard truncation marker retains its V8 format meaning.
 Long failed scans consume the examined text on the same line, avoiding repeated
 rescans and preserving parsing after the next newline.
+Unfinished quoted strings also stop at the physical line boundary. Embedded source
+ends at the script footer in SharedFunctionInfo dumps or the properties footer in
+JSFunction dumps. An identical footer line inside the source remains ambiguous.
 
 ## Build and test
 
@@ -66,6 +69,9 @@ cache. Without the variable, it reuses the cached SDK or downloads one as needed
 Automatically downloaded archives are checked against pinned SHA-256 digests from
 the official release before extraction. Incomplete caches and older caches without
 a verification marker are recreated. `WASI_SDK_PATH` uses the SDK you specify directly.
+Concurrent builds share one SDK installation. If an interrupted installation leaves
+an installation lock, the error includes its path; remove it after confirming the
+installation process has stopped, then retry.
 
 PowerShell (current terminal session):
 
